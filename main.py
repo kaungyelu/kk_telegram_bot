@@ -26,7 +26,6 @@ za_data = {}
 com_data = {}
 pnumber_value = None
 date_control = {}
-datelist = []
 overbuy_list = {}
 
 # Utility
@@ -54,9 +53,12 @@ async def dateclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     date_control[key] = False
     await update.message.reply_text(f"{key} စာရင်းပိတ်လိုက်ပါပြီ")
 
-# ✅ Updated Message Handler with Power Entry
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    if not user.username:
+        await update.message.reply_text("ကျေးဇူးပြု၍ Telegram username သတ်မှတ်ပါ")
+        return
+
     key = get_current_date_key()
     if not date_control.get(key, False):
         await update.message.reply_text("စာရင်းပိတ်ထားပါသည်")
@@ -72,50 +74,63 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[user.username][key] = []
 
     for entry in entries:
-        if "-" in entry:
-            try:
+        try:
+            if "-" in entry:
                 num_str, amt_str = entry.split("-")
                 num = int(num_str)
                 amt = int(amt_str)
-                ledger[num] = ledger.get(num, 0) + amt
-                user_data[user.username][key].append((num, amt))
-                added += amt
-            except:
-                continue
-        else:
-            try:
+            else:
                 num = int(entry)
-                amt = 500
-                ledger[num] = ledger.get(num, 0) + amt
-                user_data[user.username][key].append((num, amt))
-                added += amt
-            except:
-                continue
+                amt = 500  # Default amount
+            
+            # Validate number range
+            if num < 0 or num > 99:
+                raise ValueError("Invalid number")
+                
+            ledger[num] = ledger.get(num, 0) + amt
+            user_data[user.username][key].append((num, amt))
+            added += amt
+        except Exception as e:
+            logging.error(f"Error processing entry: {entry} - {str(e)}")
+            continue
 
-    await update.message.reply_text(f"{added} လို")
+    if added > 0:
+        await update.message.reply_text(f"{added} လို")
+    else:
+        await update.message.reply_text("အချက်အလက်များကိုစစ်ဆေးပါ")
 
 async def ledger_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["📒 Ledger Summary"]
     for i in range(100):
         total = ledger.get(i, 0)
-        lines.append(f"{i:02} ➤ {total if total else ''}")
+        if total > 0:  # Only show numbers with bets
+            lines.append(f"{i:02} ➤ {total}")
     await update.message.reply_text("\n".join(lines))
 
 async def break_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
+        if not context.args:
+            await update.message.reply_text("Usage: /break [limit]")
+            return
+            
         limit = int(context.args[0])
         msg = ["📌 Over Limit:"]
         for k, v in ledger.items():
             if v > limit:
                 msg.append(f"{k:02} ➤ {v - limit}")
-        await update.message.reply_text("\n".join(msg))
-    except:
-        await update.message.reply_text("Limit amount ထည့်ပါ")
+        
+        if len(msg) == 1:
+            await update.message.reply_text("ဘယ်ဂဏန်းမှ limit မကျော်ပါ")
+        else:
+            await update.message.reply_text("\n".join(msg))
+    except (ValueError, IndexError):
+        await update.message.reply_text("Limit amount ထည့်ပါ (ဥပမာ: /break 5000)")
 
 async def overbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 1:
-        await update.message.reply_text("User name ထည့်ပါ")
+    if not context.args:
+        await update.message.reply_text("Usage: /overbuy [username]")
         return
+        
     user = context.args[0]
     overbuy_list[user] = ledger.copy()
     await update.message.reply_text(f"{user} အတွက် overbuy စာရင်းပြထားပါတယ်")
@@ -123,20 +138,37 @@ async def overbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pnumber(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global pnumber_value
     try:
+        if not context.args:
+            await update.message.reply_text("Usage: /pnumber [number]")
+            return
+            
         pnumber_value = int(context.args[0])
+        if pnumber_value < 0 or pnumber_value > 99:
+            await update.message.reply_text("ဂဏန်းကို 0 နှင့် 99 ကြားထည့်ပါ")
+            return
+            
         msg = []
         for user, records in user_data.items():
             total = 0
-            for d in records:
-                for num, amt in records[d]:
+            for date_key in records:
+                for num, amt in records[date_key]:
                     if num == pnumber_value:
                         total += amt
-            msg.append(f"{user}: {pnumber_value} ➤ {total}")
-        await update.message.reply_text("\n".join(msg))
-    except:
-        await update.message.reply_text("ဂဏန်းမှန်မှန်ထည့်ပါ")
+            if total > 0:
+                msg.append(f"{user}: {pnumber_value} ➤ {total}")
+        
+        if msg:
+            await update.message.reply_text("\n".join(msg))
+        else:
+            await update.message.reply_text(f"{pnumber_value} အတွက် လောင်းကြေးမရှိပါ")
+    except (ValueError, IndexError):
+        await update.message.reply_text("ဂဏန်းမှန်မှန်ထည့်ပါ (ဥပမာ: /pnumber 15)")
 
 async def comandza(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not user_data:
+        await update.message.reply_text("လက်ရှိ user မရှိပါ")
+        return
+        
     users = list(user_data.keys())
     keyboard = [[InlineKeyboardButton(u, callback_data=f"comza:{u}")] for u in users]
     await update.message.reply_text("User ကိုရွေးပါ", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -145,52 +177,98 @@ async def comza_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data['selected_user'] = query.data.split(":")[1]
-    await query.edit_message_text(f"{context.user_data['selected_user']} ကိုရွေးထားသည်။ 15/80 လို့ထည့်ပါ။")
+    await query.edit_message_text(f"{context.user_data['selected_user']} ကိုရွေးထားသည်။ 15/80 လို့ထည့်ပါ")
 
 async def comza_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = context.user_data.get('selected_user')
-    if user and '/' in update.message.text:
+    if not user:
+        # Not in commission setting mode, process as normal message
+        await handle_message(update, context)
+        return
+        
+    text = update.message.text
+    if '/' in text:
         try:
-            com, za = map(int, update.message.text.split('/'))
+            parts = text.split('/')
+            if len(parts) != 2:
+                raise ValueError
+            
+            com = int(parts[0])
+            za = int(parts[1])
+            
+            if com < 0 or com > 100 or za < 0:
+                raise ValueError
+                
             com_data[user] = com
             za_data[user] = za
+            del context.user_data['selected_user']  # Clear state
             await update.message.reply_text(f"Com {com}%, Za {za} မှတ်ထားပြီး")
         except:
-            await update.message.reply_text("မှန်မှန်ရေးပါ (ဥပမာ 15/80)")
+            await update.message.reply_text("မှန်မှန်ရေးပါ (ဥပမာ: 15/80)")
+    else:
+        await update.message.reply_text("ဖော်မတ်မှားနေပါသည်။ 15/80 လို့ထည့်ပါ")
 
 async def total(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not user_data:
+        await update.message.reply_text("လက်ရှိစာရင်းမရှိပါ")
+        return
+        
+    if pnumber_value is None:
+        await update.message.reply_text("ကျေးဇူးပြု၍ /pnumber ဖြင့် power number သတ်မှတ်ပါ")
+        return
+        
     msg = []
     for user, records in user_data.items():
-        total = sum(amt for d in records for _, amt in records[d])
-        com = com_data.get(user, 0)
-        za = za_data.get(user, 0)
-        after_com = total - (total * com) // 100
-
+        total_amt = 0
         pamt = 0
-        for d in records:
-            for num, amt in records[d]:
+        
+        # Calculate totals
+        for date_key in records:
+            for num, amt in records[date_key]:
+                total_amt += amt
                 if num == pnumber_value:
                     pamt += amt
-
-        win = pamt * za
-        net = after_com - win
+        
+        # Get commission and za rates (default to 0 if not set)
+        com = com_data.get(user, 0)
+        za = za_data.get(user, 0)
+        
+        commission_amt = (total_amt * com) // 100
+        after_com = total_amt - commission_amt
+        win_amt = pamt * za
+        
+        net = after_com - win_amt
         status = "ဒိုင်ကပေးရမည်" if net < 0 else "ဒိုင်ကရမည်"
-
-        msg.append(
-            f"{user}\nTotal: {total}\nCom({com}%) ➤ {total * com // 100}\nAfter Com: {after_com}\n"
-            f"Pnumber({pnumber_value}) ➤ {pamt}\nZa({za}) ➤ {win}\nResult: {net} ({status})\n---"
+        
+        user_report = (
+            f"{user}\n"
+            f"Total: {total_amt}\n"
+            f"Com({com}%) ➤ {commission_amt}\n"
+            f"After Com: {after_com}\n"
+            f"Pnumber({pnumber_value}) ➤ {pamt}\n"
+            f"Za({za}) ➤ {win_amt}\n"
+            f"Result: {abs(net)} ({status})\n"
+            "---"
         )
+        msg.append(user_report)
 
     await update.message.reply_text("\n".join(msg))
 
 async def tsent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not user_data:
+        await update.message.reply_text("လက်ရှိ user မရှိပါ")
+        return
+        
     for user in user_data:
         await update.message.reply_text(f"{user} အတွက်စာရင်းပေးပို့ပြီး")
 
 async def alldata(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = []
-    for user in user_data:
-        msg.append(user)
+    if not user_data:
+        await update.message.reply_text("လက်ရှိစာရင်းမရှိပါ")
+        return
+        
+    msg = ["👥 Registered Users:"]
+    msg.extend(user_data.keys())
     await update.message.reply_text("\n".join(msg))
 
 # Main
