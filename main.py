@@ -6,7 +6,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
-from datetime import datetime, time
+from datetime import datetime, time, timedelta, timezone
 
 # Load .env token
 load_dotenv()
@@ -17,6 +17,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
+# Timezone
+MMT = timezone(timedelta(hours=6, minutes=30))
 
 # Globals
 admin_id = None
@@ -30,11 +33,11 @@ datelist = []
 overbuy_list = {}
 
 def get_time_segment():
-    now = datetime.now().time()
+    now = datetime.now(MMT).time()
     return "AM" if now < time(12, 0) else "PM"
 
 def get_current_date_key():
-    now = datetime.now()
+    now = datetime.now(MMT)
     return f"{now.strftime('%d/%m/%Y')} {get_time_segment()}"
 
 def parse_numbers(text):
