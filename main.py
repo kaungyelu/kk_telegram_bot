@@ -1,303 +1,202 @@
 import os
 import logging
-import re
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time
 
-# Load .env token
+# Load .env
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Fixed ADMIN_ID loading
-try:
-    ADMIN_ID = int(os.environ["ADMIN_ID"])  # Railway environment variable
-    logging.info(f"✅ ADMIN_ID loaded: {ADMIN_ID}")
-except (KeyError, ValueError) as e:
-    logging.critical("❌ Failed to load ADMIN_ID: %s", e)
-    exit(1)
-
-# Timezone
-MMT = timezone(timedelta(hours=6, minutes=30))
+# Logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 
 # Globals
-user_data = {}          # {user_id: {date_key: [(num, amount)]}}
-ledger = {}             # {num: total_amount}
-za_data = {}            # {user_id: za_value}
-com_data = {}           # {user_id: com_percentage}
-pnumber_value = None    # Current pnumber
-date_control = {}       # {date_key: bool}
-overbuy_list = {}       # {user_id: ledger_copy}
-user_names = {}         # {user_id: display_name}
+admin_id = None
+user_data = {}
+ledger = {}
+za_data = {}
+com_data = {}
+pnumber_value = None
+date_control = {}
+datelist = []
+overbuy_list = {}
 
-# Helper functions
+# Utility
 def get_time_segment():
-    now = datetime.now(MMT).time()
+    now = datetime.now().time()
     return "AM" if now < time(12, 0) else "PM"
 
 def get_current_date_key():
-    now = datetime.now(MMT)
+    now = datetime.now()
     return f"{now.strftime('%d/%m/%Y')} {get_time_segment()}"
-
-def parse_numbers(text):
-    return list(map(int, re.findall(r'\d{2}', text)))
-
-def is_admin(user_id):
-    return user_id == ADMIN_ID
 
 # Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_names[user.id] = user.username or user.first_name
+    global admin_id
+    admin_id = update.effective_user.id
     await update.message.reply_text("🤖 Bot started.")
 
 async def dateopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
     key = get_current_date_key()
     date_control[key] = True
     await update.message.reply_text(f"{key} စာရင်းဖွင့်ပြီးပါပြီ")
 
 async def dateclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
     key = get_current_date_key()
     date_control[key] = False
     await update.message.reply_text(f"{key} စာရင်းပိတ်လိုက်ပါပြီ")
 
-async def handle_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ✅ Updated Message Handler with Power Entry
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    user_id = user.id
     key = get_current_date_key()
-    
-    # Store user display name
-    if user_id not in user_names:
-        user_names[user_id] = user.username or user.first_name
-    
-    # Check date control
     if not date_control.get(key, False):
         await update.message.reply_text("စာရင်းပိတ်ထားပါသည်")
         return
 
-    # Process numbers
-    numbers = parse_numbers(update.message.text)
-    if not numbers:
-        return
-    
-    # Initialize user data
-    if user_id not in user_data:
-        user_data[user_id] = {}
-    if key not in user_data[user_id]:
-        user_data[user_id][key] = []
-    
-    # Update ledger and user data
-    for num in numbers:
-        bet_amount = 500  # Fixed amount per number
-        ledger[num] = ledger.get(num, 0) + bet_amount
-        user_data[user_id][key].append((num, bet_amount))
-    
-    total_bet = len(numbers) * 500
-    await update.message.reply_text(f"{total_bet} လို")
+    text = update.message.text
+    entries = text.split()
+    added = 0
+
+    if user.username not in user_data:
+        user_data[user.username] = {}
+    if key not in user_data[user.username]:
+        user_data[user.username][key] = []
+
+    for entry in entries:
+        if "-" in entry:
+            try:
+                num_str, amt_str = entry.split("-")
+                num = int(num_str)
+                amt = int(amt_str)
+                ledger[num] = ledger.get(num, 0) + amt
+                user_data[user.username][key].append((num, amt))
+                added += amt
+            except:
+                continue
+        else:
+            try:
+                num = int(entry)
+                amt = 500
+                ledger[num] = ledger.get(num, 0) + amt
+                user_data[user.username][key].append((num, amt))
+                added += amt
+            except:
+                continue
+
+    await update.message.reply_text(f"{added} လို")
 
 async def ledger_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
-        
     lines = ["📒 Ledger Summary"]
     for i in range(100):
         total = ledger.get(i, 0)
-        if total > 0:
-            lines.append(f"{i:02} ➤ {total}")
+        lines.append(f"{i:02} ➤ {total if total else ''}")
     await update.message.reply_text("\n".join(lines))
 
 async def break_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
-        
     try:
         limit = int(context.args[0])
         msg = ["📌 Over Limit:"]
-        for num, total in ledger.items():
-            if total > limit:
-                msg.append(f"{num:02} ➤ {total - limit}")
+        for k, v in ledger.items():
+            if v > limit:
+                msg.append(f"{k:02} ➤ {v - limit}")
         await update.message.reply_text("\n".join(msg))
     except:
-        await update.message.reply_text("Limit amount ထည့်ပါ (ဥပမာ: /break 10000)")
+        await update.message.reply_text("Limit amount ထည့်ပါ")
 
 async def overbuy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
-        
     if len(context.args) != 1:
-        await update.message.reply_text("User ID ထည့်ပါ (ဥပမာ: /overbuy 123456789)")
+        await update.message.reply_text("User name ထည့်ပါ")
         return
-        
-    try:
-        user_id = int(context.args[0])
-        overbuy_list[user_id] = ledger.copy()
-        await update.message.reply_text(f"{user_names.get(user_id, user_id)} အတွက် overbuy စာရင်းပြထားပါတယ်")
-    except:
-        await update.message.reply_text("ဂဏန်းမှန်မှန်ထည့်ပါ")
+    user = context.args[0]
+    overbuy_list[user] = ledger.copy()
+    await update.message.reply_text(f"{user} အတွက် overbuy စာရင်းပြထားပါတယ်")
 
 async def pnumber(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
-        
     global pnumber_value
     try:
         pnumber_value = int(context.args[0])
         msg = []
-        for user_id, records in user_data.items():
+        for user, records in user_data.items():
             total = 0
-            for date_key in records:
-                for num, amt in records[date_key]:
+            for d in records:
+                for num, amt in records[d]:
                     if num == pnumber_value:
                         total += amt
-            if total > 0:
-                msg.append(f"{user_names.get(user_id, user_id)}: {pnumber_value} ➤ {total}")
-        await update.message.reply_text("\n".join(msg) if msg else "ဒေတာမရှိပါ")
+            msg.append(f"{user}: {pnumber_value} ➤ {total}")
+        await update.message.reply_text("\n".join(msg))
     except:
-        await update.message.reply_text("ဂဏန်းမှန်မှန်ထည့်ပါ (ဥပမာ: /pnumber 12)")
+        await update.message.reply_text("ဂဏန်းမှန်မှန်ထည့်ပါ")
 
 async def comandza(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
-        
-    if not user_data:
-        await update.message.reply_text("အသုံးပြုသူမရှိသေးပါ")
-        return
-        
-    keyboard = []
-    for user_id in user_data:
-        display_name = user_names.get(user_id, f"User_{user_id}")
-        keyboard.append([InlineKeyboardButton(display_name, callback_data=f"comza:{user_id}")])
-    
-    await update.message.reply_text(
-        "User ကိုရွေးပါ", 
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    users = list(user_data.keys())
+    keyboard = [[InlineKeyboardButton(u, callback_data=f"comza:{u}")] for u in users]
+    await update.message.reply_text("User ကိုရွေးပါ", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def comza_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = int(query.data.split(":")[1])
-    context.user_data['selected_user_id'] = user_id
-    display_name = user_names.get(user_id, f"User_{user_id}")
-    await query.edit_message_text(f"{display_name} ကိုရွေးထားသည်။ Com/Za ထည့်ပါ (ဥပမာ: 15/80)")
+    context.user_data['selected_user'] = query.data.split(":")[1]
+    await query.edit_message_text(f"{context.user_data['selected_user']} ကိုရွေးထားသည်။ 15/80 လို့ထည့်ပါ။")
 
 async def comza_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if 'selected_user_id' not in context.user_data:
-        return
-        
-    try:
-        text = update.message.text
-        if '/' not in text:
-            raise ValueError
-            
-        com_str, za_str = text.split('/')
-        com = int(com_str.strip())
-        za = int(za_str.strip())
-        user_id = context.user_data['selected_user_id']
-        
-        com_data[user_id] = com
-        za_data[user_id] = za
-        
-        del context.user_data['selected_user_id']
-        display_name = user_names.get(user_id, f"User_{user_id}")
-        await update.message.reply_text(f"{display_name} - Com {com}%, Za {za} မှတ်ထားပြီး")
-    except:
-        await update.message.reply_text("မှားယွင်းနေပါသည်။ ဥပမာ: 15/80")
+    user = context.user_data.get('selected_user')
+    if user and '/' in update.message.text:
+        try:
+            com, za = map(int, update.message.text.split('/'))
+            com_data[user] = com
+            za_data[user] = za
+            await update.message.reply_text(f"Com {com}%, Za {za} မှတ်ထားပြီး")
+        except:
+            await update.message.reply_text("မှန်မှန်ရေးပါ (ဥပမာ 15/80)")
 
 async def total(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
-        
-    if not user_data:
-        await update.message.reply_text("ဒေတာမရှိသေးပါ")
-        return
-        
-    global pnumber_value
     msg = []
-    
-    for user_id, records in user_data.items():
-        # Calculate total bets
-        user_total = sum(amt for date_records in records.values() for _, amt in date_records)
-        
-        # Get com/za values
-        com = com_data.get(user_id, 0)
-        za = za_data.get(user_id, 0)
-        
-        # Calculate commission
-        commission = (user_total * com) // 100
-        after_com = user_total - commission
-        
-        # Calculate winning amount
+    for user, records in user_data.items():
+        total = sum(amt for d in records for _, amt in records[d])
+        com = com_data.get(user, 0)
+        za = za_data.get(user, 0)
+        after_com = total - (total * com) // 100
+
         pamt = 0
-        if pnumber_value is not None:
-            for date_records in records.values():
-                for num, amt in date_records:
-                    if num == pnumber_value:
-                        pamt += amt
-        
-        win_amount = pamt * za
-        net_amount = after_com - win_amount
-        status = "ဒိုင်ကပေးရမည်" if net_amount < 0 else "ဒိုင်ကရမည်"
-        
-        # Prepare message
-        display_name = user_names.get(user_id, f"User_{user_id}")
-        user_msg = [
-            f"👤 {display_name}",
-            f"စုစုပေါင်း: {user_total}",
-            f"ကော်မရှင်({com}%): {commission}",
-            f"ကော်မအပြီး: {after_com}",
-            f"ပါဝါနံပါတ်({pnumber_value or '-'}): {pamt}",
-            f"ဇာ({za}): {win_amount}",
-            f"အသားတင်: {abs(net_amount)} ({status})",
-            "------------------"
-        ]
-        msg.append("\n".join(user_msg))
-    
+        for d in records:
+            for num, amt in records[d]:
+                if num == pnumber_value:
+                    pamt += amt
+
+        win = pamt * za
+        net = after_com - win
+        status = "ဒိုင်ကပေးရမည်" if net < 0 else "ဒိုင်ကရမည်"
+
+        msg.append(
+            f"{user}\nTotal: {total}\nCom({com}%) ➤ {total * com // 100}\nAfter Com: {after_com}\n"
+            f"Pnumber({pnumber_value}) ➤ {pamt}\nZa({za}) ➤ {win}\nResult: {net} ({status})\n---"
+        )
+
     await update.message.reply_text("\n".join(msg))
 
 async def tsent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
-        
-    for user_id in user_data:
-        display_name = user_names.get(user_id, f"User_{user_id}")
-        await update.message.reply_text(f"{display_name} အတွက်စာရင်းပေးပို့ပြီး")
+    for user in user_data:
+        await update.message.reply_text(f"{user} အတွက်စာရင်းပေးပို့ပြီး")
 
 async def alldata(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Permission denied.")
-        return
-        
-    msg = ["အသုံးပြုသူစာရင်း:"]
-    for user_id in user_data:
-        display_name = user_names.get(user_id, f"User_{user_id}")
-        msg.append(f"- {display_name} (ID: {user_id})")
-    
+    msg = []
+    for user in user_data:
+        msg.append(user)
     await update.message.reply_text("\n".join(msg))
 
 # Main
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
-    
-    # Command handlers
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("dateopen", dateopen))
     app.add_handler(CommandHandler("dateclose", dateclose))
@@ -309,18 +208,9 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("total", total))
     app.add_handler(CommandHandler("tsent", tsent))
     app.add_handler(CommandHandler("alldata", alldata))
-    
-    # Callback handlers
+
     app.add_handler(CallbackQueryHandler(comza_input, pattern=r"^comza:"))
-    
-    # Message handlers
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.User(ADMIN_ID),
-        comza_text
-    ))
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        handle_bet
-    ))
-    
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), comza_text))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+
     app.run_polling()
