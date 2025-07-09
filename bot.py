@@ -80,7 +80,7 @@ class AIProvider:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bot စတင်ခြင်း"""
     await update.message.reply_text(
-        "🤖 AI Assistant Bot မှ ကြိုဆိုပါတယ်!\n"
+        "🤖 AI Assistant Bot မှ ကြိုဆိုပါတယ်Kkuserမအားလို့ကိုယ်စားဖြေပေးပါ့မယ်!\n"
         "မေးခွန်းမေးရန် group ထဲတွင် ရိုက်ထည့်ပါ\n\n"
         "အသုံးပြုနည်း:\n"
         "/usage - API သုံးစွဲမှုကြည့်ရန်\n"
@@ -108,7 +108,7 @@ async def check_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # DeepSeek usage စစ်ဆေးခြင်း
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
-            await update.message.reply_text("❌ DeepSeek API key မထည့်ထားပါ")
+            await update.message.reply_text("❌ Dယ API key မထည့်ထားပါ")
             return
             
         headers = {"Authorization": f"Bearer {api_key}"}
@@ -162,7 +162,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Message from {user_id}: {user_input}")
         
         # AI ကို မေးခွန်းမေးခြင်း
-        thinking_msg = await update.message.reply_text("🤔 စဉ်းစားနေဆဲ...")
+        thinking_msg = await update.message.reply_text("🤔 ကျနော်ဆရာKKuserကိုမေးနေတယ် စောင့်ပါ...")
         ai_response = AIProvider.get_response(user_input)
         
         # တုံ့ပြန်ချက် လှီးဖြတ်ခြင်း
@@ -176,7 +176,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error: {str(e)}")
         error_msg = (
             "⚠️ အဖြေရယူရာတွင် ပြဿနာတစ်ခုဖြစ်နေပါသည်။\n"
-            "ကျေးဇူးပြု၍ မိနစ်အနည်းငယ်ကြာမှ ထပ်ကြိုးစားပါ"
+            "ကျေးဇူးပြု၍ မိနစ်အနည်းငယ်ကြာမှ ထပ်ကြိုးစားပါ KKuserကိုလည်းမေးနိုင်တယ် မသိဘူးဘဲဖြေမှာ😜"
         )
         await update.message.reply_text(error_msg)
 
