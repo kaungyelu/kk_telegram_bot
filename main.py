@@ -12,14 +12,14 @@ from datetime import datetime, time, timedelta, timezone
 # Load .env token
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))  # Add ADMIN_ID in .env
 
-# Logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# Fixed ADMIN_ID loading
+try:
+    ADMIN_ID = int(os.environ["ADMIN_ID"])  # Railway environment variable
+    logging.info(f"✅ ADMIN_ID loaded: {ADMIN_ID}")
+except (KeyError, ValueError) as e:
+    logging.critical("❌ Failed to load ADMIN_ID: %s", e)
+    exit(1)
 
 # Timezone
 MMT = timezone(timedelta(hours=6, minutes=30))
