@@ -35,18 +35,30 @@ class AIProvider:
 
     @staticmethod
     def deepseek(user_message: str) -> str:
-        """DeepSeek API သုံးခြင်း"""
+        """DeepSeek API သုံးခြင်း - မြန်မာလိုပဲဖြေရန်"""
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
             raise Exception("DeepSeek API key not set")
         
         url = "https://api.deepseek.com/v1/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        
+        # မြန်မာလိုပဲဖြေရန်နှင့် KKuser ၏တပည့်အဖြစ် ဖော်ပြရန် system prompt
+        system_prompt = (
+            "သင်သည် KKuser ၏တပည့်တစ်ဦးဖြစ်ပြီး သူ၏ကိုယ်စားဖြေဆိုနေခြင်းဖြစ်သည်။ "
+            "မည်သည့်ဘာသာစကားဖြင့်မေးသည်ဖြစ်စေ မြန်မာဘာသာဖြင့်သာ ဖြေဆိုရမည်။ "
+            "ဖြေကြားရာတွင် ရိုးရှင်းပြီး နားလည်လွယ်သော မြန်မာစကားပြောပုံစံဖြင့် ဖြေဆိုပါ။"
+        )
+        
         payload = {
             "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": user_message}],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
             "temperature": 0.7,
-            "max_tokens": 2000
+            "max_tokens": 2000,
+            "top_p": 1
         }
         
         response = requests.post(url, json=payload, headers=headers, timeout=30)
@@ -55,17 +67,32 @@ class AIProvider:
             error_msg = response.json().get('error', {}).get('message', 'Unknown error')
             raise Exception(f"DeepSeek API Error ({response.status_code}): {error_msg}")
         
-        return response.json()['choices'][0]['message']['content']
+        # မြန်မာလိုဖြေမှသာ return ပြန်ခြင်း
+        ai_response = response.json()['choices'][0]['message']['content']
+        if not any("\u1000" <= char <= "\u109F" for char in ai_response):  # မြန်မာစာလုံးမပါရင် error
+            raise Exception("DeepSeek returned non-Burmese response")
+        
+        return ai_response
 
     @staticmethod
     def openrouter(user_message: str) -> str:
-        """OpenRouter fallback"""
+        """OpenRouter fallback - မြန်မာလိုပဲဖြေရန်"""
         api_key = os.getenv("OPENROUTER_API_KEY")
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {"Authorization": f"Bearer {api_key or 'sk-or-v1-...'}"}
+        
+        # မြန်မာလိုပဲဖြေရန် prompt
+        system_prompt = (
+            "ကျေးဇူးပြု၍ မြန်မာဘာသာဖြင့်သာ ဖြေဆိုပါ။ "
+            "သင်သည် KKuser ၏တပည့်တစ်ဦးဖြစ်ပြီး သူ၏ကိုယ်စားဖြေဆိုနေခြင်းဖြစ်သည်။"
+        )
+        
         payload = {
             "model": "mistralai/mistral-7b-instruct:free",
-            "messages": [{"role": "user", "content": user_message}]
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ]
         }
         
         response = requests.post(url, json=payload, headers=headers, timeout=30)
@@ -80,7 +107,8 @@ class AIProvider:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Bot စတင်ခြင်း"""
     await update.message.reply_text(
-        "🤖 AI Assistant Bot မှ ကြိုဆိုပါတယ်Kkuserမအားလို့ကိုယ်စားဖြေပေးပါ့မယ်!\n"
+        "🤖 KKuser ဆရာကြီး၏ တပည့်တစ်ဦးမှ ကြိုဆိုပါတယ်!\n"
+        "ဆရာကြီး မအားလို့ ကျွန်တော်ကိုယ်စား ဖြေပေးပါ့မယ်။\n\n"
         "မေးခွန်းမေးရန် group ထဲတွင် ရိုက်ထည့်ပါ\n\n"
         "အသုံးပြုနည်း:\n"
         "/usage - API သုံးစွဲမှုကြည့်ရန်\n"
@@ -108,7 +136,7 @@ async def check_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # DeepSeek usage စစ်ဆေးခြင်း
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
-            await update.message.reply_text("❌ Dယ API key မထည့်ထားပါ")
+            await update.message.reply_text("❌ DeepSeek API key မထည့်ထားပါ")
             return
             
         headers = {"Authorization": f"Bearer {api_key}"}
@@ -162,7 +190,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Message from {user_id}: {user_input}")
         
         # AI ကို မေးခွန်းမေးခြင်း
-        thinking_msg = await update.message.reply_text("🤔 ကျနော်ဆရာKKuserကိုမေးနေတယ် စောင့်ပါ...")
+        thinking_msg = await update.message.reply_text("🤔 ဆရာကြီး KKuser ကို မေးနေပါတယ်...")
         ai_response = AIProvider.get_response(user_input)
         
         # တုံ့ပြန်ချက် လှီးဖြတ်ခြင်း
@@ -170,13 +198,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ai_response = ai_response[:4000] + "..."
         
         await thinking_msg.delete()
-        await update.message.reply_text(ai_response)
+        
+        # KKuser ၏တပည့်အဖြစ် ဖော်ပြသော signature ထည့်ပေးခြင်း
+        signature = "\n\n- KKuser ၏ တပည့်တစ်ဦးမှ ဖြေဆိုပါသည် -"
+        final_response = ai_response + signature
+        
+        await update.message.reply_text(final_response)
         
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         error_msg = (
             "⚠️ အဖြေရယူရာတွင် ပြဿနာတစ်ခုဖြစ်နေပါသည်။\n"
-            "ကျေးဇူးပြု၍ မိနစ်အနည်းငယ်ကြာမှ ထပ်ကြိုးစားပါ KKuserကိုလည်းမေးနိုင်တယ် မသိဘူးဘဲဖြေမှာ😜"
+            "ကျေးဇူးပြု၍ မိနစ်အနည်းငယ်ကြာမှ ထပ်ကြိုးစားပါ"
         )
         await update.message.reply_text(error_msg)
 
@@ -206,7 +239,7 @@ def main():
     ))
     
     # Bot စတင်ခြင်း
-    logger.info("🤖kkအစားဖြေဆိုမဲ့ Bot starting...")
+    logger.info("🤖 KKuser ၏ တပည့်ဘော့စ် စတင်နေပါပြီ...")
     app.run_polling()
 
 if __name__ == "__main__":
