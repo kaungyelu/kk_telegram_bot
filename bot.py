@@ -12,30 +12,30 @@ from telegram.ext import (
     filters
 )
 
-# Logging စနစ်ကို setup လုပ်ခြင်း
+# Logging setup
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# အသုံးပြုမှု ကန့်သတ်ချက်
-USER_COOLDOWN = {}  # {user_id: last_request_time}
-REQUEST_COOLDOWN = 15  # စက္ကန့်
+# User cooldown
+USER_COOLDOWN = {}
+REQUEST_COOLDOWN = 15  # seconds
 
 class AIProvider:
     @staticmethod
     def get_response(user_message: str) -> str:
-        """AI provider ကို အလိုအလျောက် ပြောင်းသုံးခြင်း"""
+        """Automatically switch between AI providers"""
         try:
             return AIProvider.deepseek(user_message)
         except Exception as e:
             logger.error(f"DeepSeek failed: {str(e)}")
-            return AIProvider.openrouter(user_message)
+            return AIProvider.gemini(user_message)  # Changed to Gemini fallback
 
     @staticmethod
     def deepseek(user_message: str) -> str:
-        """DeepSeek API သုံးခြင်း - မြန်မာလိုပဲဖြေရန်"""
+        """DeepSeek API with dynamic language"""
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
             raise Exception("DeepSeek API key not set")
@@ -43,11 +43,10 @@ class AIProvider:
         url = "https://api.deepseek.com/v1/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         
-        # မြန်မာလိုပဲဖြေရန်နှင့် KKuser ၏တပည့်အဖြစ် ဖော်ပြရန် system prompt
+        # Dynamic language response
         system_prompt = (
-            "သင်သည် KKuser ၏တပည့်တစ်ဦးဖြစ်ပြီး သူ၏ကိုယ်စားဖြေဆိုနေခြင်းဖြစ်သည်။ "
-            "မည်သည့်ဘာသာစကားဖြင့်မေးသည်ဖြစ်စေ မြန်မာဘာသာဖြင့်သာ ဖြေဆိုရမည်။ "
-            "ဖြေကြားရာတွင် ရိုးရှင်းပြီး နားလည်လွယ်သော မြန်မာစကားပြောပုံစံဖြင့် ဖြေဆိုပါ။"
+            "You are a student of KKuser answering on his behalf. "
+            "Respond in the SAME LANGUAGE as the user's question."
         )
         
         payload = {
@@ -57,8 +56,7 @@ class AIProvider:
                 {"role": "user", "content": user_message}
             ],
             "temperature": 0.7,
-            "max_tokens": 2000,
-            "top_p": 1
+            "max_tokens": 2000
         }
         
         response = requests.post(url, json=payload, headers=headers, timeout=30)
@@ -67,76 +65,75 @@ class AIProvider:
             error_msg = response.json().get('error', {}).get('message', 'Unknown error')
             raise Exception(f"DeepSeek API Error ({response.status_code}): {error_msg}")
         
-        # မြန်မာလိုဖြေမှသာ return ပြန်ခြင်း
-        ai_response = response.json()['choices'][0]['message']['content']
-        if not any("\u1000" <= char <= "\u109F" for char in ai_response):  # မြန်မာစာလုံးမပါရင် error
-            raise Exception("DeepSeek returned non-Burmese response")
-        
-        return ai_response
+        return response.json()['choices'][0]['message']['content']
 
     @staticmethod
-    def openrouter(user_message: str) -> str:
-        """OpenRouter fallback - မြန်မာလိုပဲဖြေရန်"""
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {api_key or 'sk-or-v1-...'}"}
+    def gemini(user_message: str) -> str:
+        """Gemini 2.5 API fallback"""
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise Exception("Gemini API key not set")
         
-        # မြန်မာလိုပဲဖြေရန် prompt
-        system_prompt = (
-            "ကျေးဇူးပြု၍ မြန်မာဘာသာဖြင့်သာ ဖြေဆိုပါ။ "
-            "သင်သည် KKuser ၏တပည့်တစ်ဦးဖြစ်ပြီး သူ၏ကိုယ်စားဖြေဆိုနေခြင်းဖြစ်သည်။"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key={api_key}"
+        
+        # Dynamic language instruction
+        system_instruction = (
+            "You are a student of KKuser answering on his behalf. "
+            "Respond in the SAME LANGUAGE as the user's question."
         )
         
         payload = {
-            "model": "mistralai/mistral-7b-instruct:free",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ]
+            "contents": [
+                {
+                    "parts": [
+                        {"text": system_instruction},
+                        {"text": user_message}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 2000
+            }
         }
         
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response = requests.post(url, json=payload, timeout=30)
         
         if response.status_code != 200:
             error_msg = response.json().get('error', {}).get('message', 'Unknown error')
-            raise Exception(f"OpenRouter Error ({response.status_code}): {error_msg}")
+            raise Exception(f"Gemini API Error ({response.status_code}): {error_msg}")
         
-        return response.json()['choices'][0]['message']['content']
+        return response.json()['candidates'][0]['content']['parts'][0]['text']
 
 # ===================== Bot Commands =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bot စတင်ခြင်း"""
     await update.message.reply_text(
-        "🤖 KKuser ဆရာကြီး၏ တပည့်တစ်ဦးမှ ကြိုဆိုပါတယ်!\n"
-        "ဆရာကြီး မအားလို့ ကျွန်တော်ကိုယ်စား ဖြေပေးပါ့မယ်။\n\n"
-        "မေးခွန်းမေးရန် group ထဲတွင် ရိုက်ထည့်ပါ\n\n"
-        "အသုံးပြုနည်း:\n"
-        "/usage - API သုံးစွဲမှုကြည့်ရန်\n"
-        "/help - အကူအညီ"
+        "🤖 KKuser's assistant bot is ready!\n"
+        "Ask anything in the group chat\n\n"
+        "Usage:\n"
+        "/usage - Check API usage\n"
+        "/help - Help guide"
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """အကူအညီ command"""
     help_text = (
-        "🛠️ အသုံးပြုနည်း:\n"
-        "1. Group ထဲတွင် မေးခွန်းမေးပါ\n"
-        "2. Bot ကို Admin အဖြစ်ခန့်ပါ\n"
-        "3. Privacy mode ပိတ်ထားပါ\n\n"
+        "🛠️ How to use:\n"
+        "1. Ask questions in group chat\n"
+        "2. Make bot admin\n"
+        "3. Disable privacy mode\n\n"
         "📋 Commands:\n"
-        "/start - Bot စတင်ရန်\n"
-        "/usage - API သုံးစွဲမှု\n"
-        "/ping - Bot အလုပ်လုပ်မလုပ်စစ်ဆေးရန်\n"
-        "/help - အကူအညီ"
+        "/start - Start bot\n"
+        "/usage - Check API usage\n"
+        "/ping - Check bot status\n"
+        "/help - Show help"
     )
     await update.message.reply_text(help_text)
 
 async def check_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """API သုံးစွဲမှု ကြည့်ရန်"""
     try:
-        # DeepSeek usage စစ်ဆေးခြင်း
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
-            await update.message.reply_text("❌ DeepSeek API key မထည့်ထားပါ")
+            await update.message.reply_text("❌ DeepSeek API key not configured")
             return
             
         headers = {"Authorization": f"Bearer {api_key}"}
@@ -153,75 +150,66 @@ async def check_usage(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"• Reset: {reset_date}"
             )
         else:
-            message = f"⚠️ Error: {response.status_code} - {response.text[:100]}"
+            message = f"⚠️ Error: {response.status_code}"
     except Exception as e:
         message = f"❌ Usage check failed: {str(e)}"
     
     await update.message.reply_text(message)
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bot အလုပ်လုပ်မလုပ် စစ်ဆေးခြင်း"""
     start_time = time.time()
     msg = await update.message.reply_text("🏓 Pong!...")
     end_time = time.time()
     latency = round((end_time - start_time) * 1000, 2)
-    
     await msg.edit_text(f"🏓 Pong! Latency: {latency}ms")
 
 # ===================== Message Handling =====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Group ထဲက မက်ဆေ့ဂျ်များကို ကိုင်တွယ်ခြင်း"""
     try:
         user_id = update.message.from_user.id
         current_time = time.time()
         
-        # Cooldown စစ်ဆေးခြင်း
+        # Cooldown check
         if user_id in USER_COOLDOWN:
             elapsed = current_time - USER_COOLDOWN[user_id]
             if elapsed < REQUEST_COOLDOWN:
                 await update.message.reply_text(
-                    f"⏳ ကျေးဇူးပြု၍ {REQUEST_COOLDOWN - int(elapsed)} စက္ကန့်စောင့်ပါ"
+                    f"⏳ Please wait {REQUEST_COOLDOWN - int(elapsed)} seconds"
                 )
                 return
         
         USER_COOLDOWN[user_id] = current_time
-        
         user_input = update.message.text
         logger.info(f"Message from {user_id}: {user_input}")
         
-        # AI ကို မေးခွန်းမေးခြင်း
-        thinking_msg = await update.message.reply_text("🤔 ဆရာကြီး KKuser ကို မေးနေပါတယ်...")
+        # Get AI response
+        thinking_msg = await update.message.reply_text("🤔 Asking KKuser...")
         ai_response = AIProvider.get_response(user_input)
         
-        # တုံ့ပြန်ချက် လှီးဖြတ်ခြင်း
-        if len(ai_response) > 4000:
-            ai_response = ai_response[:4000] + "..."
+        # Add signature
+        final_response = f"{ai_response}\n\n- Answered by KKuser's student"
+        
+        if len(final_response) > 4000:
+            final_response = final_response[:4000] + "..."
         
         await thinking_msg.delete()
-        
-        # KKuser ၏တပည့်အဖြစ် ဖော်ပြသော signature ထည့်ပေးခြင်း
-        signature = "\n\n- KKuser ၏ တပည့်တစ်ဦးမှ ဖြေဆိုပါသည် -"
-        final_response = ai_response + signature
-        
         await update.message.reply_text(final_response)
         
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         error_msg = (
-            "⚠️ အဖြေရယူရာတွင် ပြဿနာတစ်ခုဖြစ်နေပါသည်။\n"
-            "ကျေးဇူးပြု၍ မိနစ်အနည်းငယ်ကြာမှ ထပ်ကြိုးစားပါ"
+            "⚠️ Error getting response\n"
+            "Please try again later"
         )
         await update.message.reply_text(error_msg)
 
 # ===================== Main Application =====================
 def main():
-    # Bot token စစ်ဆေးခြင်း
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN:
-        logger.error("TELEGRAM_TOKEN environment variable not set!")
+        logger.error("TELEGRAM_TOKEN not set!")
         exit(1)
     
-    # Bot application ဖန်တီးခြင်း
     app = Application.builder().token(TOKEN).build()
     
     # Command handlers
@@ -238,8 +226,7 @@ def main():
         handle_message
     ))
     
-    # Bot စတင်ခြင်း
-    logger.info("🤖 KKuser ၏ တပည့်ဘော့စ် စတင်နေပါပြီ...")
+    logger.info("🤖 Bot starting...")
     app.run_polling()
 
 if __name__ == "__main__":
