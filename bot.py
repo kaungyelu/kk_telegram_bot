@@ -59,12 +59,17 @@ class AIProvider:
             if provider == 'gemini':
                 return AIProvider.gemini(messages, user_id)
             elif provider == 'deepseek':
-                return AIProvider.deepseek(messages)
+                return AIProvider.deepseek(messages, user_id)
             elif provider == 'openrouter':
-                return AIProvider.openrouter(messages)
+                return AIProvider.openrouter(messages, user_id)
         except Exception as e:
             logger.error(f"{provider} error: {str(e)}")
-            raise Exception(f"⚠️ {provider} အလုပ်မလုပ်ပါ။ ကျေးဇူးပြု၍ နောက်မှထပ်ကြိုးစားပါ")
+            # Try fallback to other provider
+            fallback = 'gemini' if provider != 'gemini' else 'deepseek'
+            try:
+                return AIProvider.get_response(fallback, messages, user_id)
+            except:
+                raise Exception("ကျေးဇူးပြု၍ နောက်မှထပ်ကြိုးစားပါ")
 
     @staticmethod
     def gemini(messages, user_id):
@@ -74,8 +79,10 @@ class AIProvider:
         
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
         
+        # Get user's custom prompt
         prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
         
+        # Convert messages to Gemini format with system instruction
         contents = []
         for msg in messages:
             if msg['role'] == 'system':
@@ -102,7 +109,7 @@ class AIProvider:
         return response.json()['candidates'][0]['content']['parts'][0]['text']
 
     @staticmethod
-    def deepseek(messages):
+    def deepseek(messages, user_id):
         api_key = os.getenv("DEEPSEEK_API_KEY")
         if not api_key:
             raise Exception("DEEPSEEK_API_KEY မရှိပါ")
@@ -113,9 +120,13 @@ class AIProvider:
             "Content-Type": "application/json"
         }
         
+        # Add system prompt as first message
+        prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
+        messages_with_prompt = [{"role": "system", "content": prompt}] + messages
+        
         payload = {
             "model": "deepseek-chat",
-            "messages": messages,
+            "messages": messages_with_prompt,
             "temperature": 0.7
         }
         
@@ -127,7 +138,7 @@ class AIProvider:
         return response.json()['choices'][0]['message']['content']
 
     @staticmethod
-    def openrouter(messages):
+    def openrouter(messages, user_id):
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             raise Exception("OPENROUTER_API_KEY မရှိပါ")
@@ -135,13 +146,17 @@ class AIProvider:
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/yourusername/yourrepo",
-            "X-Title": "My AI Bot"
+            "HTTP-Referer": "https://github.com/kaungyelu/kk_telegram_bot",
+            "X-Title": "KKuser Ai Bot"
         }
+        
+        # Use Gemini model via OpenRouter for better Myanmar support
+        prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
+        messages_with_prompt = [{"role": "system", "content": prompt}] + messages
         
         payload = {
             "model": "google/gemini-pro",
-            "messages": messages
+            "messages": messages_with_prompt
         }
         
         response = requests.post(url, headers=headers, json=payload, timeout=30)
@@ -151,9 +166,11 @@ class AIProvider:
         
         return response.json()['choices'][0]['message']['content']
 
+# Conversation history management
 def get_history(user_id):
     history = Database.get_user_data(user_id, "conversation_history") or []
     
+    # Add system prompt if not exists
     if not any(msg['role'] == 'system' for msg in history):
         prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
         history.insert(0, {"role": "system", "content": prompt})
@@ -168,9 +185,10 @@ def save_to_history(user_id, role, content):
 def clear_history(user_id):
     Database.set_user_data(user_id, "conversation_history", [])
 
+# Telegram Bot Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    Database.set_user_data(user_id, "user_providers", "gemini")
+    Database.set_user_data(user_id, "user_providers", "gemini")  # Default to Gemini
     
     await update.message.reply_text(
         "🤖 AI Assistant Bot မှ ကြိုဆိုပါတယ်!\n\n"
@@ -194,6 +212,7 @@ async def set_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_prompt = ' '.join(context.args)
     Database.set_user_data(user_id, "user_prompts", new_prompt)
     
+    # Update system message in history
     history = get_history(user_id)
     if history and history[0]['role'] == 'system':
         history[0]['content'] = new_prompt
@@ -246,13 +265,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
+        # Get user settings
         provider = Database.get_user_data(user_id, "user_providers") or "gemini"
         history = get_history(user_id)
+        
+        # Add user message to history
         history.append({"role": "user", "content": user_message})
         
+        # Get AI response
         thinking_msg = await update.message.reply_text("🤔 တွေးဆနေပါသည်...")
         ai_response = AIProvider.get_response(provider, history, user_id)
         
+        # Save conversation
         save_to_history(user_id, "assistant", ai_response)
         
         await thinking_msg.delete()
@@ -263,24 +287,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ အမှားတစ်ခုဖြစ်နေပါသည်: {str(e)}")
 
 def main():
+    # Check environment variables
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN:
         logger.error("TELEGRAM_TOKEN environment variable not set!")
         exit(1)
     
+    # Create application
     app = Application.builder().token(TOKEN).build()
     
+    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("setprompt", set_prompt))
     app.add_handler(CommandHandler("setprovider", set_provider))
     app.add_handler(CommandHandler("clearhistory", clear_history_cmd))
     
+    # Message handler
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_message
     ))
     
+    # Start bot
     logger.info("🤖 Bot is running...")
     app.run_polling()
 
