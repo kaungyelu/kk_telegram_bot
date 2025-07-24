@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import requests
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -19,40 +20,38 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 JSON_DB = "user_data.json"
-MAX_HISTORY = 15  # Keep last 15 messages
+MAX_HISTORY = 15
 DEFAULT_SYSTEM_PROMPT = "မြန်မာလို ရှင်းရှင်းလင်းလင်း ဖြေဆိုပါ။ ဖော်ရွေစွာနှင့် အပြည့်အစုံဖြေပါ။"
 
-# Initialize JSON database
-def init_db():
-    if not os.path.exists(JSON_DB):
-        with open(JSON_DB, "w") as f:
-            json.dump({
+class Database:
+    @staticmethod
+    def load():
+        try:
+            with open(JSON_DB, "r") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {
                 "user_providers": {},
                 "user_prompts": {},
                 "conversation_history": {}
-            }, f)
+            }
 
-init_db()
+    @staticmethod
+    def save(data):
+        with open(JSON_DB, "w") as f:
+            json.dump(data, f, indent=2)
 
-# Database helper functions
-def read_db():
-    with open(JSON_DB, "r") as f:
-        return json.load(f)
+    @staticmethod
+    def get_user_data(user_id, key):
+        data = Database.load()
+        return data[key].get(str(user_id))
 
-def write_db(data):
-    with open(JSON_DB, "w") as f:
-        json.dump(data, f, indent=2)
+    @staticmethod
+    def set_user_data(user_id, key, value):
+        data = Database.load()
+        data[key][str(user_id)] = value
+        Database.save(data)
 
-def get_user_data(user_id, key):
-    db = read_db()
-    return db[key].get(str(user_id))
-
-def set_user_data(user_id, key, value):
-    db = read_db()
-    db[key][str(user_id)] = value
-    write_db(db)
-
-# AI Providers
 class AIProvider:
     @staticmethod
     def get_response(provider, messages, user_id):
@@ -75,10 +74,8 @@ class AIProvider:
         
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
         
-        # Get user's custom prompt
-        prompt = get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
+        prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
         
-        # Convert messages to Gemini format
         contents = []
         for msg in messages:
             if msg['role'] == 'system':
@@ -143,7 +140,7 @@ class AIProvider:
         }
         
         payload = {
-            "model": "google/gemini-pro",  # Use Gemini via OpenRouter
+            "model": "google/gemini-pro",
             "messages": messages
         }
         
@@ -154,13 +151,11 @@ class AIProvider:
         
         return response.json()['choices'][0]['message']['content']
 
-# Conversation history management
 def get_history(user_id):
-    history = get_user_data(user_id, "conversation_history") or []
+    history = Database.get_user_data(user_id, "conversation_history") or []
     
-    # Add system prompt if not exists
     if not any(msg['role'] == 'system' for msg in history):
-        prompt = get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
+        prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
         history.insert(0, {"role": "system", "content": prompt})
     
     return history[-MAX_HISTORY:]
@@ -168,15 +163,14 @@ def get_history(user_id):
 def save_to_history(user_id, role, content):
     history = get_history(user_id)
     history.append({"role": role, "content": content})
-    set_user_data(user_id, "conversation_history", history[-MAX_HISTORY:])
+    Database.set_user_data(user_id, "conversation_history", history[-MAX_HISTORY:])
 
 def clear_history(user_id):
-    set_user_data(user_id, "conversation_history", [])
+    Database.set_user_data(user_id, "conversation_history", [])
 
-# Telegram Bot Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    set_user_data(user_id, "user_providers", "gemini")  # Default to Gemini
+    Database.set_user_data(user_id, "user_providers", "gemini")
     
     await update.message.reply_text(
         "🤖 AI Assistant Bot မှ ကြိုဆိုပါတယ်!\n\n"
@@ -198,13 +192,12 @@ async def set_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     new_prompt = ' '.join(context.args)
-    set_user_data(user_id, "user_prompts", new_prompt)
+    Database.set_user_data(user_id, "user_prompts", new_prompt)
     
-    # Update system message in history
     history = get_history(user_id)
     if history and history[0]['role'] == 'system':
         history[0]['content'] = new_prompt
-        set_user_data(user_id, "conversation_history", history)
+        Database.set_user_data(user_id, "conversation_history", history)
     
     await update.message.reply_text(f"✅ Prompt ပြောင်းပြီးပါပြီ:\n{new_prompt}")
 
@@ -224,7 +217,7 @@ async def set_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ မသိသော provider! gemini/deepseek/openrouter သာရွေးပါ")
         return
     
-    set_user_data(user_id, "user_providers", provider)
+    Database.set_user_data(user_id, "user_providers", provider)
     await update.message.reply_text(f"✅ AI provider ကို {provider} အဖြစ်ပြောင်းပြီးပါပြီ!")
 
 async def clear_history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -253,18 +246,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Get user settings
-        provider = get_user_data(user_id, "user_providers") or "gemini"
+        provider = Database.get_user_data(user_id, "user_providers") or "gemini"
         history = get_history(user_id)
-        
-        # Add user message to history
         history.append({"role": "user", "content": user_message})
         
-        # Get AI response
         thinking_msg = await update.message.reply_text("🤔 တွေးဆနေပါသည်...")
         ai_response = AIProvider.get_response(provider, history, user_id)
         
-        # Save conversation
         save_to_history(user_id, "assistant", ai_response)
         
         await thinking_msg.delete()
@@ -275,32 +263,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ အမှားတစ်ခုဖြစ်နေပါသည်: {str(e)}")
 
 def main():
-    # Check environment variables
     TOKEN = os.getenv("TELEGRAM_TOKEN")
     if not TOKEN:
         logger.error("TELEGRAM_TOKEN environment variable not set!")
         exit(1)
     
-    # Create application
     app = Application.builder().token(TOKEN).build()
     
-    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("setprompt", set_prompt))
     app.add_handler(CommandHandler("setprovider", set_provider))
     app.add_handler(CommandHandler("clearhistory", clear_history_cmd))
     
-    # Message handler
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_message
     ))
     
-    # Start bot
     logger.info("🤖 Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
-    import requests  # Required for API calls
     main()
