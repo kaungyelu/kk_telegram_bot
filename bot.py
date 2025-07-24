@@ -23,6 +23,14 @@ JSON_DB = "user_data.json"
 MAX_HISTORY = 15
 DEFAULT_SYSTEM_PROMPT = "မြန်မာလို ရှင်းရှင်းလင်းလင်း ဖြေဆိုပါ။ ဖော်ရွေစွာနှင့် အပြည့်အစုံဖြေပါ။"
 
+# API Keys (❗ Production တွင် Environment Variables သုံးပါ)
+API_KEYS = {
+    "DEEPSEEK_API_KEY": "66e3e61c52d141628e2ac528bbcec4d4",
+    "GEMINI_API_KEY": "AIzaSyCT33GWDnK6zCJwUUQFSb1iDXaHJfN5lyY",
+    "OPENROUTER_API_KEY": "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",
+    "TELEGRAM_TOKEN": "7884893449:AAEVqAdyqxv0f5dzh58QTYdDnlF8oAtb4VE"
+}
+
 class Database:
     @staticmethod
     def load():
@@ -64,25 +72,14 @@ class AIProvider:
                 return AIProvider.openrouter(messages, user_id)
         except Exception as e:
             logger.error(f"{provider} error: {str(e)}")
-            # Try fallback to other provider
-            fallback = 'gemini' if provider != 'gemini' else 'deepseek'
-            try:
-                return AIProvider.get_response(fallback, messages, user_id)
-            except:
-                raise Exception("ကျေးဇူးပြု၍ နောက်မှထပ်ကြိုးစားပါ")
+            raise Exception(f"⚠️ အမှားတစ်ခုဖြစ်နေပါသည်: {str(e)}")
 
     @staticmethod
     def gemini(messages, user_id):
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise Exception("GEMINI_API_KEY မရှိပါ")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={API_KEYS['GEMINI_API_KEY']}"
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
-        
-        # Get user's custom prompt
         prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
         
-        # Convert messages to Gemini format with system instruction
         contents = []
         for msg in messages:
             if msg['role'] == 'system':
@@ -101,7 +98,7 @@ class AIProvider:
             }
         }
         
-        response = requests.post(url, json=payload, timeout=30)
+        response = requests.post(url, json=payload, timeout=15)
         if response.status_code != 200:
             error = response.json().get('error', {}).get('message', 'Unknown error')
             raise Exception(f"Gemini Error: {error}")
@@ -110,17 +107,12 @@ class AIProvider:
 
     @staticmethod
     def deepseek(messages, user_id):
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise Exception("DEEPSEEK_API_KEY မရှိပါ")
-        
         url = "https://api.deepseek.com/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {api_key}",
+            "Authorization": f"Bearer {API_KEYS['DEEPSEEK_API_KEY']}",
             "Content-Type": "application/json"
         }
         
-        # Add system prompt as first message
         prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
         messages_with_prompt = [{"role": "system", "content": prompt}] + messages
         
@@ -130,7 +122,7 @@ class AIProvider:
             "temperature": 0.7
         }
         
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
         if response.status_code != 200:
             error = response.json().get('error', {}).get('message', 'Unknown error')
             raise Exception(f"DeepSeek Error: {error}")
@@ -139,18 +131,13 @@ class AIProvider:
 
     @staticmethod
     def openrouter(messages, user_id):
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            raise Exception("OPENROUTER_API_KEY မရှိပါ")
-        
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://github.com/kaungyelu/kk_telegram_bot",
-            "X-Title": "KKuser Ai Bot"
+            "Authorization": f"Bearer {API_KEYS['OPENROUTER_API_KEY']}",
+            "HTTP-Referer": "https://github.com/user/repo",  # ❗ သင့် repo URL နဲ့ပြောင်းပါ
+            "X-Title": "My AI Bot"
         }
         
-        # Use Gemini model via OpenRouter for better Myanmar support
         prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
         messages_with_prompt = [{"role": "system", "content": prompt}] + messages
         
@@ -159,18 +146,16 @@ class AIProvider:
             "messages": messages_with_prompt
         }
         
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
         if response.status_code != 200:
             error = response.json().get('error', {}).get('message', 'Unknown error')
             raise Exception(f"OpenRouter Error: {error}")
         
         return response.json()['choices'][0]['message']['content']
 
-# Conversation history management
 def get_history(user_id):
     history = Database.get_user_data(user_id, "conversation_history") or []
     
-    # Add system prompt if not exists
     if not any(msg['role'] == 'system' for msg in history):
         prompt = Database.get_user_data(user_id, "user_prompts") or DEFAULT_SYSTEM_PROMPT
         history.insert(0, {"role": "system", "content": prompt})
@@ -185,10 +170,9 @@ def save_to_history(user_id, role, content):
 def clear_history(user_id):
     Database.set_user_data(user_id, "conversation_history", [])
 
-# Telegram Bot Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
-    Database.set_user_data(user_id, "user_providers", "gemini")  # Default to Gemini
+    Database.set_user_data(user_id, "user_providers", "gemini")
     
     await update.message.reply_text(
         "🤖 AI Assistant Bot မှ ကြိုဆိုပါတယ်!\n\n"
@@ -212,7 +196,6 @@ async def set_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     new_prompt = ' '.join(context.args)
     Database.set_user_data(user_id, "user_prompts", new_prompt)
     
-    # Update system message in history
     history = get_history(user_id)
     if history and history[0]['role'] == 'system':
         history[0]['content'] = new_prompt
@@ -265,18 +248,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        # Get user settings
         provider = Database.get_user_data(user_id, "user_providers") or "gemini"
         history = get_history(user_id)
-        
-        # Add user message to history
         history.append({"role": "user", "content": user_message})
         
-        # Get AI response
         thinking_msg = await update.message.reply_text("🤔 တွေးဆနေပါသည်...")
         ai_response = AIProvider.get_response(provider, history, user_id)
         
-        # Save conversation
         save_to_history(user_id, "assistant", ai_response)
         
         await thinking_msg.delete()
@@ -287,29 +265,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ အမှားတစ်ခုဖြစ်နေပါသည်: {str(e)}")
 
 def main():
-    # Check environment variables
-    TOKEN = os.getenv("TELEGRAM_TOKEN")
-    if not TOKEN:
-        logger.error("TELEGRAM_TOKEN environment variable not set!")
-        exit(1)
+    app = Application.builder().token(API_KEYS['TELEGRAM_TOKEN']).build()
     
-    # Create application
-    app = Application.builder().token(TOKEN).build()
-    
-    # Command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("setprompt", set_prompt))
     app.add_handler(CommandHandler("setprovider", set_provider))
     app.add_handler(CommandHandler("clearhistory", clear_history_cmd))
     
-    # Message handler
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_message
     ))
     
-    # Start bot
     logger.info("🤖 Bot is running...")
     app.run_polling()
 
