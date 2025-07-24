@@ -1,300 +1,353 @@
 import os
-import requests
+import json
 import logging
-import time
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+import requests
 from datetime import datetime
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters
-)
 
-# Logging setup
+# Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# User settings storage
-USER_PROVIDER = {}  # {user_id: 'deepseek'/'gemini'/'openrouter'}
-USER_COOLDOWN = {}  # {user_id: last_request_time}
-REQUEST_COOLDOWN = 15  # seconds
+# Load environment variables
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
 
-class AIProvider:
-    @staticmethod
-    def get_response(provider: str, user_message: str) -> str:
-        """Get response from selected provider"""
-        try:
-            if provider == 'deepseek':
-                return AIProvider.deepseek(user_message)
-            elif provider == 'gemini':
-                return AIProvider.gemini(user_message)
-            elif provider == 'openrouter':
-                return AIProvider.openrouter(user_message)
-            else:
-                raise ValueError("Invalid provider selected")
-        except Exception as e:
-            logger.error(f"{provider} failed: {str(e)}")
-            # Try fallback to other providers
-            for fallback in ['deepseek', 'gemini', 'openrouter']:
-                if fallback != provider:
-                    try:
-                        return AIProvider.fallback(fallback, user_message)
-                    except:
-                        continue
-            raise Exception("All providers failed")
+# Default system prompt
+DEFAULT_SYSTEM_PROMPT = "သင်သည်အကူညီပေးသော AI ဖြစ်ပါသည်။ မြန်မာလို ပြန်ကြားပါ။"
 
-    @staticmethod
-    def deepseek(user_message: str) -> str:
-        """DeepSeek API"""
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise Exception("DeepSeek API key not set")
-        
-        url = "https://api.deepseek.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        
-        payload = {
-            "model": "deepseek-chat",
-            "messages": [
-                {"role": "user", "content": user_message}
-            ],
-            "temperature": 0.5,
-            "max_tokens": 1000
+# User data storage
+USER_DATA_FILE = 'user_data.json'
+
+# Initialize user data
+def load_user_data():
+    try:
+        with open(USER_DATA_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_user_data(data):
+    with open(USER_DATA_FILE, 'w') as f:
+        json.dump(data, f, indent=2)
+
+user_data = load_user_data()
+
+# Helper functions for user data
+def get_user_data(user_id):
+    if str(user_id) not in user_data:
+        user_data[str(user_id)] = {
+            'prompt': DEFAULT_SYSTEM_PROMPT,
+            'history': [],
+            'ai_provider': 'gemini'  # default provider
         }
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        
-        if response.status_code != 200:
-            error_msg = response.json().get('error', {}).get('message', 'Unknown error')
-            raise Exception(f"DeepSeek API Error ({response.status_code}): {error_msg}")
-        
-        return response.json()['choices'][0]['message']['content']
+    return user_data[str(user_id)]
 
-    @staticmethod
-    def gemini(user_message: str) -> str:
-        """Gemini 2.5 API"""
-        api_key = os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            raise Exception("Gemini API key not set")
-        
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key={api_key}"
-        
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": user_message}
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.5,
-                "maxOutputTokens": 1000
-            }
-        }
-        
-        response = requests.post(url, json=payload, timeout=30)
-        
-        if response.status_code != 200:
-            error_msg = response.json().get('error', {}).get('message', 'Unknown error')
-            raise Exception(f"Gemini API Error ({response.status_code}): {error_msg}")
-        
-        return response.json()['candidates'][0]['content']['parts'][0]['text']
+def update_user_data(user_id, data):
+    user_data[str(user_id)] = data
+    save_user_data(user_data)
 
-    @staticmethod
-    def openrouter(user_message: str) -> str:
-        """OpenRouter API"""
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            raise Exception("OpenRouter API key not set")
-        
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "HTTP-Referer": "https://kkuser-bot.com",
-            "X-Title": "KKuser Assistant"
-        }
-        
-        payload = {
-            "model": "mistralai/mistral-7b-instruct:free",
-            "messages": [
-                {"role": "user", "content": user_message}
-            ]
-        }
-        
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        
-        if response.status_code != 200:
-            error_msg = response.json().get('error', {}).get('message', 'Unknown error')
-            raise Exception(f"OpenRouter Error ({response.status_code}): {error_msg}")
-        
-        return response.json()['choices'][0]['message']['content']
-
-    @staticmethod
-    def fallback(provider: str, user_message: str) -> str:
-        """Fallback to another provider"""
-        if provider == 'deepseek':
-            return AIProvider.deepseek(user_message)
-        elif provider == 'gemini':
-            return AIProvider.gemini(user_message)
-        elif provider == 'openrouter':
-            return AIProvider.openrouter(user_message)
-        else:
-            raise ValueError("Invalid fallback provider")
-
-# ===================== Bot Commands =====================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bot စတင်ခြင်း"""
-    user_id = update.message.from_user.id
-    USER_PROVIDER[user_id] = 'deepseek'  # Default provider
+# AI Provider Functions
+async def get_gemini_response(prompt, history, system_prompt):
+    if not GEMINI_API_KEY:
+        return "Gemini API key is not configured."
     
-    await update.message.reply_text(
-        "🤖 KKuser ဆရာကြီး၏ တပည့်ဘော့မှ ကြိုဆိုပါတယ်!\n"
-        "အောက်ပါ command များဖြင့် စတင်အသုံးပြုနိုင်ပါသည်:\n\n"
-        "/setprovider - AI ပေးသူပြောင်းရန်\n"
-        "/getprovider - လက်ရှိသုံးနေသော AI ကြည့်ရန်\n"
-        "/help - အကူအညီများကြည့်ရန်"
-    )
+    contents = []
+    
+    # Add history
+    for conv in history:
+        contents.append({"role": "user", "parts": [{"text": conv['user']}]})
+        contents.append({"role": "model", "parts": [{"text": conv['ai']}]})
+    
+    # Add current message
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """အကူအညီ command"""
-    help_text = (
-        "🛠️ အသုံးပြုနည်း:\n"
-        "1. /setprovider ဖြင့် AI ပေးသူရွေးပါ\n"
-        "2. Group ထဲတွင် မေးခွန်းမေးပါ\n\n"
-        "📋 Commands:\n"
-        "/start - Bot စတင်ရန်\n"
-        "/setprovider - AI ပေးသူပြောင်းရန် (deepseek, gemini, openrouter)\n"
-        "/getprovider - လက်ရှိသုံးနေသော AI ကြည့်ရန်\n"
-        "/ping - Bot အလုပ်လုပ်မလုပ်စစ်ဆေးရန်\n"
-        "/help - အကူအညီ"
-    )
-    await update.message.reply_text(help_text)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+    
+    payload = {
+        "contents": contents,
+        "systemInstruction": {"parts": [{"text": system_prompt}]}
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('candidates') and result['candidates'][0].get('content'):
+                return result['candidates'][0]['content']['parts'][0]['text']
+        return "Error: Could not get response from Gemini."
+    except Exception as e:
+        logger.error(f"Gemini API error: {e}")
+        return "Error connecting to Gemini service."
 
-async def set_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Set AI provider"""
-    user_id = update.message.from_user.id
+async def get_deepseek_response(prompt, history, system_prompt):
+    if not DEEPSEEK_API_KEY:
+        return "DeepSeek API key is not configured."
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Add history
+    for conv in history:
+        messages.append({"role": "user", "content": conv['user']})
+        messages.append({"role": "assistant", "content": conv['ai']})
+    
+    # Add current message
+    messages.append({"role": "user", "content": prompt})
+    
+    url = "https://api.deepseek.com/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "deepseek-chat",
+        "messages": messages,
+        "temperature": 0.7
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        return f"Error: DeepSeek API returned {response.status_code}"
+    except Exception as e:
+        logger.error(f"DeepSeek API error: {e}")
+        return "Error connecting to DeepSeek service."
+
+async def get_openrouter_response(prompt, history, system_prompt):
+    if not OPENROUTER_API_KEY:
+        return "OpenRouter API key is not configured."
+    
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Add history
+    for conv in history:
+        messages.append({"role": "user", "content": conv['user']})
+        messages.append({"role": "assistant", "content": conv['ai']})
+    
+    # Add current message
+    messages.append({"role": "user", "content": prompt})
+    
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://your-telegram-bot.com",  # Required by OpenRouter
+        "X-Title": "Telegram AI Bot"  # Required by OpenRouter
+    }
+    
+    payload = {
+        "model": "anthropic/claude-3-haiku",  # You can change this to any model on OpenRouter
+        "messages": messages,
+        "temperature": 0.7
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        return f"Error: OpenRouter API returned {response.status_code}"
+    except Exception as e:
+        logger.error(f"OpenRouter API error: {e}")
+        return "Error connecting to OpenRouter service."
+
+# Telegram Bot Handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    welcome_msg = f"""
+🤖 မင်္ဂလာပါ {user.first_name}! AI Bot မှ ကြိုဆိုပါတယ်!
+
+🆓 လုံးဝ အခမဲ့ သုံးနိုင်ပါတယ်!
+
+⚡ AI Commands
+/setprompt <prompt> - AI ကို စိတ်ကြိုက် ပြောင်းလဲရန်
+/myprompt - လက်ရှိ prompt ကြည့်ရန်
+/resetprompt - မူလ prompt ပြန်သုံးရန်
+/clearhistory - စကားဝိုင်း ရှင်းလင်းရန်
+/setai <provider> - AI provider ပြောင်းရန် (gemini, deepseek, openrouter)
+/help - အကူအညီ
+"""
+    await update.message.reply_text(welcome_msg)
+
+async def set_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
     args = context.args
     
     if not args:
-        await update.message.reply_text(
-            "ကျေးဇူးပြု၍ provider အမျိုးအစားထည့်ပါ။ ဥပမာ:\n"
-            "/setprovider deepseek\n"
-            "/setprovider gemini\n"
-            "/setprovider openrouter"
-        )
+        help_text = """
+❌ Prompt ထည့်ပါ!
+
+📝 Example:
+/setprompt သင်သည် ကဗျာဆရာတစ်ဦးဖြစ်သည်
+/setprompt You are a helpful coding assistant
+/setprompt သင်သည် ရယ်စရာကောင်းသော သူငယ်ချင်းတစ်ဦးဖြစ်သည်
+"""
+        await update.message.reply_text(help_text)
+        return
+    
+    new_prompt = ' '.join(args)
+    user_data = get_user_data(user_id)
+    user_data['prompt'] = new_prompt
+    update_user_data(user_id, user_data)
+    
+    response = f"""
+✅ AI Prompt ကို အောင်မြင်စွာ ပြောင်းလဲပြီးပါပြီ!
+
+🤖 သင့်ရဲ့ AI က ယခုအချိန်မှစ၍:
+{new_prompt}
+
+💬 စမ်းကြည့်လိုက်ပါ!
+"""
+    await update.message.reply_text(response)
+
+async def my_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = get_user_data(user_id)
+    
+    response = f"""
+🤖 လက်ရှိ AI Prompt
+
+{user_data['prompt']}
+
+🔄 ပြောင်းလဲရန်: /setprompt <new_prompt>
+"""
+    await update.message.reply_text(response)
+
+async def reset_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = get_user_data(user_id)
+    user_data['prompt'] = DEFAULT_SYSTEM_PROMPT
+    update_user_data(user_id, user_data)
+    
+    response = f"""
+🔄 AI Prompt ကို မူလအတိုင်း ပြန်လည်သတ်မှတ်ပြီးပါပြီ!
+
+🤖 Default: {DEFAULT_SYSTEM_PROMPT}
+"""
+    await update.message.reply_text(response)
+
+async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_data = get_user_data(user_id)
+    user_data['history'] = []
+    update_user_data(user_id, user_data)
+    
+    await update.message.reply_text("✅ စကားဝိုင်း မှတ်တမ်း ရှင်းလင်းပြီးပါပြီ")
+
+async def set_ai_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    args = context.args
+    
+    if not args:
+        help_text = """
+❌ AI provider ထည့်ပါ!
+
+Available providers:
+- gemini
+- deepseek
+- openrouter
+
+Example: /setai deepseek
+"""
+        await update.message.reply_text(help_text)
         return
     
     provider = args[0].lower()
-    valid_providers = ['deepseek', 'gemini', 'openrouter']
+    if provider not in ['gemini', 'deepseek', 'openrouter']:
+        await update.message.reply_text("❌ Invalid provider. Choose from: gemini, deepseek, openrouter")
+        return
     
-    if provider in valid_providers:
-        USER_PROVIDER[user_id] = provider
-        await update.message.reply_text(f"✅ AI provider ကို {provider} အဖြစ်ပြောင်းလိုက်ပါပြီ!")
-    else:
-        await update.message.reply_text(
-            f"❌ {provider} သည် မရှိသော provider ဖြစ်ပါသည်။\n"
-            f"ရနိုင်သော provider များ: {', '.join(valid_providers)}"
-        )
+    user_data = get_user_data(user_id)
+    user_data['ai_provider'] = provider
+    update_user_data(user_id, user_data)
+    
+    await update.message.reply_text(f"✅ AI provider changed to {provider}")
 
-async def get_provider(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Get current AI provider"""
-    user_id = update.message.from_user.id
-    provider = USER_PROVIDER.get(user_id, 'deepseek')
-    await update.message.reply_text(f"🔧 လက်ရှိသုံးစွဲနေသော AI provider: {provider}")
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+🤖 AI Bot Commands
 
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bot အလုပ်လုပ်မလုပ် စစ်ဆေးခြင်း"""
-    start_time = time.time()
-    msg = await update.message.reply_text("🏓 Pong!...")
-    end_time = time.time()
-    latency = round((end_time - start_time) * 1000, 2)
-    await msg.edit_text(f"🏓 Pong! Latency: {latency}ms")
+🆓 လုံးဝအခမဲ့ သုံးနိုင်ပါတယ်!
 
-# ===================== Message Handling =====================
+🎯 AI Customization
+/setprompt <text> - AI စရိုက်ပြောင်းရန်
+/myprompt - လက်ရှိ AI စရိုက်ကြည့်ရန်
+/resetprompt - မူလ AI ပြန်သုံးရန်
+/setai <provider> - AI provider ပြောင်းရန် (gemini, deepseek, openrouter)
+/clearhistory - စကားဝိုင်းရှင်းရန်
+/help - အကူအညီ
+"""
+    await update.message.reply_text(help_text)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Group ထဲက မက်ဆေ့ဂျ်များကို ကိုင်တွယ်ခြင်း"""
-    try:
-        user_id = update.message.from_user.id
-        current_time = time.time()
-        
-        # Cooldown စစ်ဆေးခြင်း
-        if user_id in USER_COOLDOWN:
-            elapsed = current_time - USER_COOLDOWN[user_id]
-            if elapsed < REQUEST_COOLDOWN:
-                await update.message.reply_text(
-                    f"⏳ ကျေးဇူးပြု၍ {REQUEST_COOLDOWN - int(elapsed)} စက္ကန့်စောင့်ပါ"
-                )
-                return
-        
-        USER_COOLDOWN[user_id] = current_time
-        
-        # Get or set default provider
-        provider = USER_PROVIDER.get(user_id, 'deepseek')
-        user_input = update.message.text
-        
-        # AI ကို မေးခွန်းမေးခြင်း
-        thinking_msg = await update.message.reply_text(f"🤔 {provider} ဖြင့် အဖြေရှာနေပါသည်...")
-        
-        try:
-            ai_response = AIProvider.get_response(provider, user_input)
-        except Exception as e:
-            logger.error(f"All providers failed: {str(e)}")
-            ai_response = "⚠️ ဆောရီးပါ၊ လက်ရှိတွင် AI များအားလုံးအလုပ်မလုပ်နိုင်ပါ။ ကျေးဇူးပြု၍ နောက်မှထပ်ကြိုးစားပါ။"
-        
-        # တုံ့ပြန်ချက် လှီးဖြတ်ခြင်း
-        if len(ai_response) > 4000:
-            ai_response = ai_response[:4000] + "..."
-        
-        # Signature ထည့်ခြင်း
-        signature = "\n\n- KKuser ၏ တပည့်တစ်ဦးမှ ဖြေဆိုပါသည် -"
-        final_response = ai_response + signature
-        
-        await thinking_msg.delete()
-        await update.message.reply_text(final_response)
-        
-    except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        error_msg = (
-            "⚠️ အဖြေရယူရာတွင် ပြဿနာတစ်ခုဖြစ်နေပါသည်။\n"
-            "ကျေးဇူးပြု၍ မိနစ်အနည်းငယ်ကြာမှ ထပ်ကြိုးစားပါ"
-        )
-        await update.message.reply_text(error_msg)
-
-# ===================== Main Application =====================
-def main():
-    # Bot token စစ်ဆေးခြင်း
-    TOKEN = os.getenv("TELEGRAM_TOKEN")
-    if not TOKEN:
-        logger.error("TELEGRAM_TOKEN environment variable not set!")
-        exit(1)
+    user_id = update.effective_user.id
+    text = update.message.text
     
-    # Bot application ဖန်တီးခြင်း
-    app = Application.builder().token(TOKEN).build()
+    if not text:
+        return
+    
+    user_data = get_user_data(user_id)
+    prompt = user_data['prompt']
+    history = user_data['history']
+    
+    # Get the appropriate AI response based on provider
+    provider = user_data.get('ai_provider', 'gemini')
+    
+    if provider == 'gemini':
+        ai_response = await get_gemini_response(text, history, prompt)
+    elif provider == 'deepseek':
+        ai_response = await get_deepseek_response(text, history, prompt)
+    elif provider == 'openrouter':
+        ai_response = await get_openrouter_response(text, history, prompt)
+    else:
+        ai_response = "Invalid AI provider configured"
+    
+    # Save conversation
+    history.append({
+        'user': text,
+        'ai': ai_response,
+        'timestamp': datetime.now().isoformat()
+    })
+    
+    # Keep only last 25 messages
+    if len(history) > 25:
+        history = history[-25:]
+    
+    user_data['history'] = history
+    update_user_data(user_id, user_data)
+    
+    await update.message.reply_text(ai_response)
+
+def main():
+    if not TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN environment variable is not set!")
+        return
+    
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
     
     # Command handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("setprovider", set_provider))
-    app.add_handler(CommandHandler("getprovider", get_provider))
-    app.add_handler(CommandHandler("ping", ping))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("setprompt", set_prompt))
+    application.add_handler(CommandHandler("myprompt", my_prompt))
+    application.add_handler(CommandHandler("resetprompt", reset_prompt))
+    application.add_handler(CommandHandler("clearhistory", clear_history))
+    application.add_handler(CommandHandler("setai", set_ai_provider))
+    application.add_handler(CommandHandler("help", help_command))
     
-    # Group message handler
-    app.add_handler(MessageHandler(
-        filters.TEXT & 
-        ~filters.COMMAND & 
-        (filters.ChatType.GROUPS | filters.ChatType.SUPERGROUP),
-        handle_message
-    ))
+    # Message handler
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # Bot စတင်ခြင်း
-    logger.info("🤖 KKuser ၏ တပည့်ဘော့စ် စတင်နေပါပြီ...")
-    app.run_polling()
+    # Start the Bot
+    application.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
