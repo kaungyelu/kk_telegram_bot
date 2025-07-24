@@ -1,8 +1,2 @@
-.env
-__pycache__
-*.pyc
-.DS_Store
-venv/
-.env.production
-secrets.txt
 user_data.json
+.env
